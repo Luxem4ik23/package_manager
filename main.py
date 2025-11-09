@@ -3,6 +3,7 @@
 import argparse
 import sys
 import json
+import os
 from validators import (
     validate_package_name,
     validate_repository,
@@ -14,12 +15,13 @@ from validators import (
     validate_filter
 )
 from package_manager import UbuntuPackageManager
+from dependency_graph import DependencyGraph
 
 
 def setup_argparse() -> argparse.ArgumentParser:
     """Настраивает парсер аргументов командной строки."""
     parser = argparse.ArgumentParser(
-        description="Визуализатор графа зависимостей пакетов Ubuntu - Этап 2"
+        description="Визуализатор графа зависимостей пакетов Ubuntu - Этап 3"
     )
 
     parser.add_argument(
@@ -81,57 +83,78 @@ def print_configuration(args):
 
 
 def run_stage_2(package: str, repo: str, version: str):
-    """Выполняет этап 2 - сбор данных о зависимостях.
-
-    Args:
-        package: Имя пакета
-        repo: URL репозитория
-        version: Версия пакета
-    """
+    """Выполняет этап 2 - сбор данных о зависимостях."""
     print(f"\n=== Этап 2: Сбор данных о зависимостях пакета {package} ===")
 
-    # Используем Ubuntu Package Manager
     package_manager = UbuntuPackageManager(repo)
-
-    # Получаем информацию о пакете
     package_info = package_manager.get_package_info(package, version)
     dependencies = package_manager.get_package_dependencies(package, version)
 
-    print(f"\n Информация о пакете {package}:")
+    print(f"\n📦 Информация о пакете {package}:")
     print(f"   Версия: {package_info['version']}")
     print(f"   Архитектура: {package_info['architecture']}")
     print(f"   Описание: {package_info['description'][:100]}...")
 
-    print(f"\n Прямые зависимости пакета {package}:")
+    print(f"\n🔗 Прямые зависимости пакета {package}:")
     if dependencies:
         for i, dep in enumerate(dependencies, 1):
             print(f"   {i}. {dep}")
     else:
         print("   ✅ Пакет не имеет зависимостей")
 
-    return package_info, dependencies
+    return package_manager, package_info, dependencies
 
 
-def save_dependencies_data(package: str, version: str, dependencies: list, package_info: dict):
-    """Сохраняет данные о зависимостях в JSON файл.
+def run_stage_3(package_manager: UbuntuPackageManager,
+                package: str,
+                version: str,
+                max_depth: int,
+                filter_substring: str,
+                ascii_mode: str):
+    """Выполняет этап 3 - построение графа зависимостей."""
+    print(f"\n=== Этап 3: Построение графа зависимостей ===")
+    print(f"Максимальная глубина: {max_depth}")
+    print(f"Фильтр: '{filter_substring}'" if filter_substring else "Фильтр: не задан")
 
-    Args:
-        package: Имя пакета
-        version: Версия пакета
-        dependencies: Список зависимостей
-        package_info: Информация о пакете
-    """
+    # Строим граф зависимостей
+    graph_builder = DependencyGraph(package_manager)
+    dependency_graph = graph_builder.build_dependency_graph(
+        package, version, max_depth, filter_substring
+    )
+
+    # Выводим ASCII-дерево если нужно
+    if ascii_mode == "yes":
+        print(f"\n🌳 Дерево зависимостей пакета {package}:")
+        print("=" * 50)
+        graph_builder.print_ascii_tree(dependency_graph.get('dependencies', {}))
+        print("=" * 50)
+
+    # Выводим статистику
+    stats = graph_builder.get_statistics(dependency_graph)
+    print(f"\n📊 Статистика графа:")
+    print(f"   Всего пакетов: {stats['total_packages']}")
+    print(f"   Максимальная глубина: {stats['max_depth_reached']}")
+    print(f"   Ошибок: {stats['errors_count']}")
+    print(f"   Циклов: {stats['cycles_count']}")
+    print(f"   Отфильтровано: {stats['filtered_count']}")
+
+    return dependency_graph, stats
+
+
+def save_dependencies_data(package: str, version: str, graph: dict, stats: dict):
+    """Сохраняет данные о зависимостях в JSON файл."""
     dependency_data = {
         'package': package,
         'version': version,
-        'dependencies': dependencies,
-        'package_info': package_info
+        'graph': graph,
+        'statistics': stats,
+        'timestamp': str(__import__('datetime').datetime.now())
     }
 
     with open('dependencies.json', 'w', encoding='utf-8') as f:
         json.dump(dependency_data, f, indent=2, ensure_ascii=False)
 
-    print(f"\n Данные сохранены в dependencies.json для использования в следующих этапах")
+    print(f"\n Данные сохранены в dependencies.json")
 
 
 def main():
@@ -148,18 +171,25 @@ def main():
         output = validate_output_file(args.output)
         ascii_mode = validate_ascii_mode(args.ascii)
         max_depth = validate_max_depth(args.max_depth)
-        substring = validate_filter(args.filter)
+        filter_substring = validate_filter(args.filter)
 
         print_configuration(args)
 
         # Этап 2: Сбор данных о зависимостях
-        package_info, dependencies = run_stage_2(package, repo, version)
+        package_manager, package_info, dependencies = run_stage_2(package, repo, version)
+
+        # Этап 3: Построение графа зависимостей
+        dependency_graph, stats = run_stage_3(
+            package_manager, package, version, max_depth,
+            filter_substring, ascii_mode
+        )
 
         # Сохранение результатов
-        save_dependencies_data(package, version, dependencies, package_info)
+        save_dependencies_data(package, version, dependency_graph, stats)
 
-        print(f"\n Этап 2 завершен успешно!")
-        print(f" Найдено зависимостей: {len(dependencies)}")
+        print(f"\n Все этапы завершены успешно!")
+        print(f" Корневой пакет: {package}")
+        print(f" Всего пакетов в графе: {stats['total_packages']}")
 
     except ValueError as e:
         print(f"\n❌ Ошибка валидации параметров: {e}")
